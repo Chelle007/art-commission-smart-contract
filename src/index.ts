@@ -1,19 +1,12 @@
 import { Canister, update, query, Vec, Opt, Ok, Result, Record, Variant, Principal, Err, text, bool, nat64, StableBTreeMap, int8 } from 'azle';
 
-// Define types for Artist, Customer, Status, Commission, and Error
-const Artist = Record({
-    artistID: Principal,
-    artistName: text,
-    price: nat64,
-    number_of_revision: int8
-});
-type Artist = typeof Artist.tsType;
+// Define types for User, Status, Commission, Transaction, and Error
 
-const Customer = Record({
-    customerID: Principal,
-    customerName: text
+const User = Record({
+    userID: Principal,
+    username: text
 });
-type Customer = typeof Customer.tsType;
+type User = typeof User.tsType;
 
 const Status = Record({
     Pending: bool,
@@ -27,14 +20,21 @@ type Status = typeof Status.tsType;
 
 const Commission = Record({
     commissionID: Principal,
-    customerID: Principal,
     artistID: Principal,
     price: nat64,
+    max_revision: int8,
+    availability: bool
+})
+type Commission = typeof Commission.tsType;
+
+const Transaction = Record({
+    transactionID: Principal,
+    commissionID: Principal,
+    customerID: Principal,
     remaining_revision: int8,
-    artURL: text,
     status: Status
 });
-type Commission = typeof Commission.tsType;
+type Transaction = typeof Transaction.tsType;
 
 const Error = Variant({
     NotFound: text,
@@ -43,83 +43,60 @@ const Error = Variant({
 })
 type Error = typeof Error.tsType;
 
-// Map to store artists, customers, and commissions
-let artists = StableBTreeMap<Principal, Artist>(0);
-let customers = StableBTreeMap<Principal, Customer>(1);
-let commissions = StableBTreeMap<Principal, Commission>(2);
+// Map to store artists, customers, commission types, and transactions
+let users = StableBTreeMap<Principal, User>(0);
+let commissions = StableBTreeMap<Principal, Commission>(1);
+let transactions = StableBTreeMap<Principal, Transaction>(2);
 
 export default Canister({
-    createArtist: update([text, nat64, int8], Artist, (artistName, price, number_of_revision) => {
-        const artistID = generateId();
-        const artist: Artist = {
-            artistID,
-            artistName,
-            price,
-            number_of_revision
+    createUser: update([text], User, (username) => {
+        const userID = generateId();
+        const user: User = {
+            userID,
+            username
         };
 
-        artists.insert(artist.artistID, artist);
+        users.insert(user.userID, user);
 
-        return artist;
+        return user;
     }),
 
-    readArtists: query([], Vec(Artist), () => {
-        return artists.values();
+    readUsers: query([], Vec(User), () => {
+        return users.values();
     }),
 
-    readArtistById: query([Principal], Opt(Artist), (id) => {
-        return artists.get(id);
+    readUserById: query([Principal], Opt(User), (id) => {
+        return users.get(id);
     }),
 
-    createCustomer: update([text], Customer, (customerName) => {
-        const customerID = generateId();
-        const customer: Customer = {
-            customerID,
-            customerName
-        };
-
-        customers.insert(customer.customerID, customer);
-
-        return customer;
+    readCommissions: query([], Vec(Transaction), () => {
+        return transactions.values();
     }),
 
-    readCustomers: query([], Vec(Customer), () => {
-        return customers.values();
-    }),
-
-    readCustomerById: query([Principal], Opt(Customer), (id) => {
-        return customers.get(id);
-    }),
-
-    readCommissions: query([], Vec(Commission), () => {
-        return commissions.values();
-    }),
-
-    readCommissionById: query([Principal], Opt(Commission), (id) => {
-        return commissions.get(id);
+    readCommissionById: query([Principal], Opt(Transaction), (id) => {
+        return transactions.get(id);
     }),
 
     // FOR CLIENT
     // Method for client to set a new commission for specific artist
-    createCommission: update([Principal, Principal], Result(Commission, Error), (artistID, customerID) => {
-        const artistOpt = artists.get(artistID);
-        if ("None" in artistOpt) {
-            return Err({ NotFound: `cannot create the commission: artist=${artistID} not found` });
+    setCommission: update([Principal, Principal], Result(Transaction, Error), (commissionID, customerID) => {
+        const commissionOpt = commissions.get(commissionID);
+        if ("None" in commissionOpt) {
+            return Err({ NotFound: `cannot create the commission: artist=${commissionID} not found` });
         }
-        const artist = artistOpt.Some;
+        const commission = commissionOpt.Some;
 
-        const customerOpt = customers.get(customerID);
-        if ("None" in customerOpt) {
+        const userOpt = users.get(customerID);
+        if ("None" in userOpt) {
             return Err({ NotFound: `cannot create the commission: customer=${customerID} not found` });
         }
 
-        const commissionID = generateId();
-        const commission: Commission = {
+        const transactionID = generateId();
+        const transaction: Transaction = {
+            transactionID,
             commissionID,
             customerID,
-            ...artist,
-            remaining_revision: artist.number_of_revision,
-            artURL: "",
+            remaining_revision: commission.max_revision,
             status: { 
                 Pending: true,
                 Accepted: false,
@@ -130,124 +107,143 @@ export default Canister({
             }
         }
 
-        commissions.insert(commissionID, commission);
-        return Ok(commission);
+        transactions.insert(transactionID, transaction);
+        return Ok(transaction);
     }),
 
     // Method for client to end the commission by approving the artwork
-    approveCommission: update([Principal], Result(Commission, Error), (commissionID) => {
-        const commissionOpt = commissions.get(commissionID);
-        if ("None" in commissionOpt) {
-            return Err({ NotFound: `cannot approve commission: commission=${commissionID} not found` });
+    approveCommission: update([Principal], Result(Transaction, Error), (transactionID) => {
+        const transactionOpt = transactions.get(transactionID);
+        if ("None" in transactionOpt) {
+            return Err({ NotFound: `cannot approve commission: transaction=${transactionID} not found` });
         }
-        const commission = commissionOpt.Some;
+        const transaction = transactionOpt.Some;
 
-        const commissionValidity = checkCommissionValidity(commission.status, "approve commission");
-        if (commissionValidity!=="valid") {
-            return Err({ InvalidTransaction: commissionValidity});
+        const transactionValidity = checkCommissionValidity(transaction.status, "approve commission");
+        if (transactionValidity!=="valid") {
+            return Err({ InvalidTransaction: transactionValidity});
         }
         
-        commission.status.Approved = true;
-        commissions.insert(commissionID, commission);
-        return Ok(commission);
+        transaction.status.Approved = true;
+        transactions.insert(transactionID, transaction);
+        return Ok(transaction);
     }),
 
     // Method for client to request revision
-    requestRevision: update([Principal], Result(Commission, Error), (commissionID) => {
-        const commissionOpt = commissions.get(commissionID);
-        if ("None" in commissionOpt) {
-            return Err({ NotFound: `cannot request revision: commission=${commissionID} not found` });
+    requestRevision: update([Principal], Result(Transaction, Error), (transactionID) => {
+        const transactionOpt = transactions.get(transactionID);
+        if ("None" in transactionOpt) {
+            return Err({ NotFound: `cannot request revision: transaction=${transactionID} not found` });
         }
-        const commission = commissionOpt.Some;
+        const transaction = transactionOpt.Some;
 
-        const commissionValidity = checkCommissionValidity(commission.status, "request revision");
-        if (commissionValidity!=="valid") {
-            return Err({ InvalidTransaction: commissionValidity});
+        const transactionValidity = checkCommissionValidity(transaction.status, "request revision");
+        if (transactionValidity!=="valid") {
+            return Err({ InvalidTransaction: transactionValidity});
         }
         
-        if (commission.remaining_revision === 0) {
+        if (transaction.remaining_revision === 0) {
             return Err({ NoRemainingRevision: "no more revision can be made" });
         }
         
-        commission.remaining_revision--;
-        commission.status.ArtworkSubmitted = false;
-        commissions.insert(commissionID, commission);
-        return Ok(commission);
+        transaction.remaining_revision--;
+        transaction.status.ArtworkSubmitted = false;
+        transactions.insert(transactionID, transaction);
+        return Ok(transaction);
     }),
 
     // FOR ARTIST
-    // Method for artist to accept the commission
-    acceptCommission: update([Principal], Result(Commission, Error), (commissionID) => {
-        const commissionOpt = commissions.get(commissionID);
-        if ("None" in commissionOpt) {
-            return Err({ NotFound: `cannot accept commission: commission=${commissionID} not found` });
+    // Method for artist to create commission type
+    createCommissionType: update([Principal, nat64, int8], Result(Commission, Error), (artistID, price, max_revision) => {
+        const userOpt = users.get(artistID);
+        if ("None" in userOpt) {
+            return Err({ NotFound: `cannot create the commission: artist=${artistID} not found` });
         }
-        const commission = commissionOpt.Some;
 
-        const commissionValidity = checkCommissionValidity(commission.status, "accept commission");
-        if (commissionValidity!=="valid") {
-            return Err({ InvalidTransaction: commissionValidity});
+        const commissionID = generateId();
+        const commission: Commission = {
+            commissionID,
+            artistID,
+            price,
+            max_revision,
+            availability: true,
         }
-        
-        commission.status.Accepted = true;
+
         commissions.insert(commissionID, commission);
         return Ok(commission);
+    }),
+
+    // Method for artist to accept the commission
+    acceptCommission: update([Principal], Result(Transaction, Error), (transactionID) => {
+        const transactionOpt = transactions.get(transactionID);
+        if ("None" in transactionOpt) {
+            return Err({ NotFound: `cannot accept commission: transaction=${transactionID} not found` });
+        }
+        const transaction = transactionOpt.Some;
+
+        const transactionValidity = checkCommissionValidity(transaction.status, "accept commission");
+        if (transactionValidity!=="valid") {
+            return Err({ InvalidTransaction: transactionValidity});
+        }
+        
+        transaction.status.Accepted = true;
+        transactions.insert(transactionID, transaction);
+        return Ok(transaction);
     }),
 
     // Method for artist to reject the commission
-    rejectCommission: update([Principal], Result(Commission, Error), (commissionID) => {
-        const commissionOpt = commissions.get(commissionID);
-        if ("None" in commissionOpt) {
-            return Err({ NotFound: `cannot reject commission: commission=${commissionID} not found` });
+    rejectCommission: update([Principal], Result(Transaction, Error), (transactionID) => {
+        const transactionOpt = transactions.get(transactionID);
+        if ("None" in transactionOpt) {
+            return Err({ NotFound: `cannot reject commission: transaction=${transactionID} not found` });
         }
-        const commission = commissionOpt.Some;
+        const transaction = transactionOpt.Some;
 
-        const commissionValidity = checkCommissionValidity(commission.status, "reject commission");
-        if (commissionValidity!=="valid") {
-            return Err({ InvalidTransaction: commissionValidity});
+        const transactionValidity = checkCommissionValidity(transaction.status, "reject commission");
+        if (transactionValidity!=="valid") {
+            return Err({ InvalidTransaction: transactionValidity});
         }
         
-        commission.status.Rejected = true;
-        commissions.insert(commissionID, commission);
-        return Ok(commission);
+        transaction.status.Rejected = true;
+        transactions.insert(transactionID, transaction);
+        return Ok(transaction);
     }),
 
     // Method for artist to submit the artwork
-    submitArtwork: update([Principal, text], Result(Commission, Error), (commissionID, artURL) => {
-        const commissionOpt = commissions.get(commissionID);
-        if ("None" in commissionOpt) {
-            return Err({ NotFound: `cannot submit artwork: commission=${commissionID} not found` });
+    submitArtwork: update([Principal, text], Result(Transaction, Error), (transactionID, artURL) => {
+        const transactionOpt = transactions.get(transactionID);
+        if ("None" in transactionOpt) {
+            return Err({ NotFound: `cannot submit artwork: transaction=${transactionID} not found` });
         }
-        const commission = commissionOpt.Some;
+        const transaction = transactionOpt.Some;
 
-        const commissionValidity = checkCommissionValidity(commission.status, "submit artwork");
-        if (commissionValidity!=="valid") {
-            return Err({ InvalidTransaction: commissionValidity});
+        const transactionValidity = checkCommissionValidity(transaction.status, "submit artwork");
+        if (transactionValidity!=="valid") {
+            return Err({ InvalidTransaction: transactionValidity});
         }
         
-        commission.artURL = artURL;
-        commission.status.ArtworkSubmitted = true;
-        commissions.insert(commissionID, commission);
-        return Ok(commission);
+        transaction.status.ArtworkSubmitted = true;
+        transactions.insert(transactionID, transaction);
+        return Ok(transaction);
     }),
 
     // FOR BOTH PARTIES
     // Method for both parties to cancel the commission
-    cancelCommission: update([Principal], Result(Commission, Error), (commissionID) => {
-        const commissionOpt = commissions.get(commissionID);
-        if ("None" in commissionOpt) {
-            return Err({ NotFound: `cannot cancel commission: commission=${commissionID} not found` });
+    cancelCommission: update([Principal], Result(Transaction, Error), (transactionID) => {
+        const transactionOpt = transactions.get(transactionID);
+        if ("None" in transactionOpt) {
+            return Err({ NotFound: `cannot cancel commission: transaction=${transactionID} not found` });
         }
-        const commission = commissionOpt.Some;
+        const transaction = transactionOpt.Some;
 
-        const commissionValidity = checkCommissionValidity(commission.status, "cancel commission");
-        if (commissionValidity!=="valid") {
-            return Err({ InvalidTransaction: commissionValidity});
+        const transactionValidity = checkCommissionValidity(transaction.status, "cancel commission");
+        if (transactionValidity!=="valid") {
+            return Err({ InvalidTransaction: transactionValidity});
         }
         
-        commission.status.Cancelled = true;
-        commissions.insert(commissionID, commission);
-        return Ok(commission);
+        transaction.status.Cancelled = true;
+        transactions.insert(transactionID, transaction);
+        return Ok(transaction);
     }),
 
 })
@@ -261,16 +257,16 @@ function generateId(): Principal {
     return Principal.fromUint8Array(Uint8Array.from(randomBytes));
 }
 
-// Method to check commission's validity
+// Method to check transaction's validity
 function checkCommissionValidity(status: Status, methodType: string): string {
-    let commissionValidity = "valid";
-    if (status.Cancelled) commissionValidity = "commission has been cancelled";
-    else if (status.Approved) commissionValidity = "commission has ended";
-    else if (status.Rejected) commissionValidity = "commission has been rejected";
-    else if (!status.Accepted && (methodType !== "accept commission" && methodType !== "reject commission")) commissionValidity = "commission has yet to be accepted";
-    else if (status.Accepted && (methodType === "accept commission" || methodType === "reject commission")) commissionValidity = "commission has been accepted";
-    else if (!status.ArtworkSubmitted && (methodType === "approve commission" || methodType === "request revision")) commissionValidity = "artwork not finished";
+    let transactionValidity = "valid";
+    if (status.Cancelled) transactionValidity = "commission has been cancelled";
+    else if (status.Approved) transactionValidity = "commission has ended";
+    else if (status.Rejected) transactionValidity = "commission has been rejected";
+    else if (!status.Accepted && (methodType !== "accept commission" && methodType !== "reject commission")) transactionValidity = "commission has yet to be accepted";
+    else if (status.Accepted && (methodType === "accept commission" || methodType === "reject commission")) transactionValidity = "commission has been accepted";
+    else if (!status.ArtworkSubmitted && (methodType === "approve commission" || methodType === "request revision")) transactionValidity = "artwork not finished";
 
-    if (commissionValidity!= "valid") return `cannot ${methodType}: ${commissionValidity}`;
+    if (transactionValidity!= "valid") return `cannot ${methodType}: ${transactionValidity}`;
     else return "valid";
 }
