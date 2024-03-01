@@ -1,0 +1,12 @@
+{
+    "canisters": {
+        "art_commission": {
+            "type": "custom",
+            "main": "src/index.ts",
+            "candid": "src/index.did",
+            "build": "npx azle art_commission",
+            "wasm": ".azle/art_commission/art_commission.wasm",
+            "gzip": true
+        }
+    }
+}
