@@ -1,4 +1,7 @@
-import { Canister, update, query, Vec, Opt, Ok, Result, Record, Variant, Principal, Err, text, bool, nat64, StableBTreeMap, int8 } from 'azle';
+import { Canister, update, query, Vec, Opt, None, Some, Ok, Result, Record, Variant, Principal, Err, text, bool, nat64, StableBTreeMap, int8, ic, Duration } from 'azle';
+import { Ledger, binaryAddressFromAddress, binaryAddressFromPrincipal, hexAddressFromPrincipal } from 'azle/canisters/ledger';
+import { hashCode } from 'hashcode';
+import { v4 as uuidv4 } from 'uuid';
 
 // Define types for User, Status, Commission, Transaction, and Error
 
@@ -32,7 +35,9 @@ const Transaction = Record({
     commissionID: Principal,
     customerID: Principal,
     remaining_revision: int8,
-    status: Status
+    status: Status,
+    paid_at_block: Opt(nat64),
+    memo: nat64
 });
 type Transaction = typeof Transaction.tsType;
 
@@ -47,6 +52,9 @@ type Error = typeof Error.tsType;
 let users = StableBTreeMap<Principal, User>(0);
 let commissions = StableBTreeMap<Principal, Commission>(1);
 let transactions = StableBTreeMap<Principal, Transaction>(2);
+
+// Initialization of the Ledger canister, which handles financial transactions and ledger operations
+const icpCanister = Ledger(Principal.fromText("bd3sg-teaaa-aaaaa-qaaba-cai"));
 
 export default Canister({
     createUser: update([text], User, (username) => {
@@ -78,8 +86,8 @@ export default Canister({
     }),
 
     // FOR CLIENT
-    // Method for client to set a new commission for specific artist
-    setCommission: update([Principal, Principal], Result(Transaction, Error), (commissionID, customerID) => {
+    // Method for client to set a new commission
+    setCommission: update([Principal, Principal, nat64, nat64], Result(Transaction, Error), async(commissionID, customerID, block, memo) => {
         const commissionOpt = commissions.get(commissionID);
         if ("None" in commissionOpt) {
             return Err({ NotFound: `cannot create the commission: artist=${commissionID} not found` });
@@ -91,6 +99,11 @@ export default Canister({
             return Err({ NotFound: `cannot create the commission: customer=${customerID} not found` });
         }
 
+        const paymentVerified = await verifyPaymentInternal(commission.artistID, commission.price, block, memo);
+        if (!paymentVerified) {
+            return Err({ NotFound: `cannot complete the purchase: cannot verify the payment, memo=${memo}` });
+        }
+    
         const transactionID = generateId();
         const transaction: Transaction = {
             transactionID,
@@ -104,7 +117,9 @@ export default Canister({
                 ArtworkSubmitted: false,
                 Approved: false,
                 Cancelled: false
-            }
+            },
+            paid_at_block: Some(block),
+            memo: generateCorrelationId(transactionID)
         }
 
         transactions.insert(transactionID, transaction);
@@ -186,6 +201,7 @@ export default Canister({
             return Err({ InvalidTransaction: transactionValidity});
         }
         
+        transaction.status.Pending = false;
         transaction.status.Accepted = true;
         transactions.insert(transactionID, transaction);
         return Ok(transaction);
@@ -204,6 +220,7 @@ export default Canister({
             return Err({ InvalidTransaction: transactionValidity});
         }
         
+        transaction.status.Pending = false;
         transaction.status.Rejected = true;
         transactions.insert(transactionID, transaction);
         return Ok(transaction);
@@ -248,7 +265,10 @@ export default Canister({
 
 })
 
-// Method to randomly generate ID in Principal type
+function hash(input: any): nat64 {
+    return BigInt(Math.abs(hashCode().value(input)));
+};
+
 function generateId(): Principal {
     const randomBytes = new Array(29)
         .fill(0)
@@ -256,6 +276,28 @@ function generateId(): Principal {
 
     return Principal.fromUint8Array(Uint8Array.from(randomBytes));
 }
+
+function generateCorrelationId(transactionID: Principal): nat64 {
+    const correlationId = `${transactionID}_${ic.caller().toText()}_${ic.time()}`;
+    return hash(correlationId);
+};
+
+async function verifyPaymentInternal(receiver: Principal, amount: nat64, block: nat64, memo: nat64): Promise<bool> {
+    const blockData = await ic.call(icpCanister.query_blocks, { args: [{ start: block, length: 1n }] });
+    const tx = blockData.blocks.find((block) => {
+        if ("None" in block.transaction.operation) {
+            return false;
+        }
+        const operation = block.transaction.operation.Some;
+        const senderAddress = binaryAddressFromPrincipal(ic.caller(), 0);
+        const receiverAddress = binaryAddressFromPrincipal(receiver, 0);
+        return block.transaction.memo === memo &&
+            hash(senderAddress) === hash(operation.Transfer?.from) &&
+            hash(receiverAddress) === hash(operation.Transfer?.to) &&
+            amount === operation.Transfer?.amount.e8s;
+    });
+    return tx ? true : false;
+};
 
 // Method to check transaction's validity
 function checkCommissionValidity(status: Status, methodType: string): string {
